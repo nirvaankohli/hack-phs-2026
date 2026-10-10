@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "color": "#034E57",
+    "hue_tolerance": 15,
+    "shade_tolerance": 160,
+    "min_dot_area": 30
+  },
+  "expected_dots": [[258, 667], [272, 390], [810, 263], [1433, 568], [1443, 281]]
+}
