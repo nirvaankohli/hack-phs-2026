@@ -1,13 +1,31 @@
 
 
 import argparse
+import re
 import sys
 import unittest
 
 import cv2
 import numpy as np
 
-from wing_tracker import MEASUREMENT_KEYS, detect_points, measurements, parse_hex, sample_color
+from wing_tracker import MEASUREMENT_KEYS, detect_points, measurements
+
+
+def parse_hex(value):
+    value = value.lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", value):
+        raise argparse.ArgumentTypeError("Use six hex digits, e.g. #00FF00")
+    return "#" + value.upper()
+
+
+def sample_color(frame, x, y):
+    """Read a small patch of the raw camera frame, returning an RGB hex color."""
+    if not (0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]):
+        return None
+    patch = frame[max(0, y - 2):y + 3, max(0, x - 2):x + 3]
+    bgr = np.median(patch, axis=(0, 1)).astype(int)
+    return "#%02X%02X%02X" % tuple(bgr[::-1])
+
 
 
 def common_hues(frame, tolerance=15):
