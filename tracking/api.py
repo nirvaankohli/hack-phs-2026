@@ -38,7 +38,7 @@ def get_settings():
 
 @app.post("/settings", response_model=Settings)
 def set_settings(update: SettingsUpdate):
-    """Update supplied fields; omitted fields keep their current values."""
+
     global settings
     changes = update.model_dump(exclude_unset=True)
     if any(value is None for value in changes.values()):

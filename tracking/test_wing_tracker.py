@@ -104,7 +104,8 @@ def draw_tracking(frame, points):
 def preview_wings():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="Run the webcam demo")
-    parser.add_argument("--color", type=parse_hex, default="#00FF00", help="Marker hex color")
+    parser.add_argument("--color", type=parse_hex, default="#034E57",
+                        help="Marker hex color (default: teal from the screenshot)")
     parser.add_argument("--camera", type=int, default=0, help="Camera index (default: 0)")
     args = parser.parse_args()
     window = "Wing tracker"
@@ -199,7 +200,7 @@ class TrackerTests(unittest.TestCase):
     def test_green_detection_and_measurements(self):
         frame = self.frame((77, 63, 31))  # OpenCV uses BGR; hex uses RGB.
         cv2.circle(frame, (20, 200), 2, (77, 63, 31), -1)  # Ignore tiny noise.
-        points, _ = detect_points(frame, "#1F3F4D")
+        points, _ = detect_points(frame, "#034E57")
         self.assertEqual(points, self.points)
         self.assertEqual(measurements(points), {
             "left_distance_from_center": 100,
@@ -278,10 +279,11 @@ class TrackerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if "--live" in sys.argv or "--hues" in sys.argv:
+    if "--test" in sys.argv:
+        sys.argv.remove("--test")
+        unittest.main()
+    else:
         try:
             preview_hues() if "--hues" in sys.argv else preview_wings()
         except (RuntimeError, cv2.error) as error:
             raise SystemExit(str(error)) from error
-    else:
-        unittest.main()
