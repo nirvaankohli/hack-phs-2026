@@ -27,27 +27,66 @@ suggests pressing Q.
 Antialiasing is set when the page loads. To get the full Ultra low speedup,
 switch to it and reload, or open http://localhost:8123/?quality=ultra.
 
-## Fly with the wing
+## Fly with your arms (camera bridge)
+
+Skyborne uses Cloudbound's camera bridge (`game/bridge.py`). Wear a marker on
+each wing and one on your body between them, all the same color. Run from the
+repository root:
 
 ```
-python tracking/wing_controller.py --sim
+.venv\Scripts\python sim\server.py
 ```
 
-This serves the sim at http://localhost:8123, opens it, and streams the live
-wing pose to it. It sends no key presses, so the page doesn't need focus. Hold
-the wing level and press **F8** (or click START in the tracker window) to
-calibrate. The eagle then copies your arms:
+This serves the sim at http://localhost:8123 and opens it. The webcam turns on
+as soon as the page opens, so it's ready by the time you press Space. On
+Windows the server opens it with DirectShow, which takes about 2 s instead of
+the 5–10 s of OpenCV's default driver. Spread your wings level and press **K**
+to calibrate after a 3-second countdown. The webcam turns off when you close
+the tab.
 
-| Your wing                              | The eagle                                               |
-| -------------------------------------- | ------------------------------------------------------- |
-| Tilt                                   | Banks and turns                                         |
-| Hold it higher or lower                | Flies at that angle: climbs, or dives and then tucks into a stoop |
-| Move it up and down                    | Its wings follow your arms, stroke for stroke           |
-| Push down fast                         | Downstroke: lift and thrust in proportion to your speed |
+A live camera view sits in the bottom-right corner, with the tracked markers
+circled, the marker count and the tracking status. Press **L** to switch it to
+marker view, which dims everything except the marker color so you can check
+the color settings. Press **L** again to hide it.
 
-Steady flapping gains height and keeps a slow bird from stalling. Holding
-still lets it glide. Tune how the arm motion maps to the bird in the `WING`
-settings at the top of `js/input.js`.
+The marker settings are built in, from Cloudbound's Wing color sliders:
+
+| Setting          | Value                                     |
+| ---------------- | ----------------------------------------- |
+| Color            | `#C45C75` (hue 346, saturation 53, brightness 77) |
+| Hue tolerance    | 8                                         |
+| Shade tolerance  | 114                                       |
+| Minimum dot size | 1 px²                                     |
+
+Override them with `--color`, `--hue-tolerance`, `--shade-tolerance` and
+`--min-dot-area`.
+
+Lips, skin and headwear can match a reddish marker color. Skyborne finds your
+face with the repository's MediaPipe model and ignores matches on your face,
+around your mouth, and on a turban, hat or hair above it. The live camera view
+outlines that area in orange. It also ignores blobs bigger than 4000 px², which
+no marker should be. Change the limit with `--max-dot-area`, or turn the head
+filter off with `--keep-head`. This lives in `sim/markers.py`; Cloudbound's
+own tracking is unchanged. Use `?camera=1` in the address for another webcam.
+
+| Your arms                        | The eagle                                          |
+| -------------------------------- | -------------------------------------------------- |
+| One wing up, the other down      | Banks and turns                                    |
+| Both held higher or lower        | Flies at that angle, climbing or diving            |
+| Bend both arms in toward your body | Tucks into a steep stoop                         |
+| Move them                        | Each wing follows its own arm, stroke for stroke   |
+| Push down fast                   | Downstroke: lift and thrust, stronger the faster you push |
+
+Wing heights are measured from the body marker, so walking or bobbing doesn't
+count as flapping. The flight angle only follows arms held still. While you
+flap, the angle holds and tucks are ignored, so each downstroke lifts you
+instead of dipping into a dive. A tuck is judged by arm reach (body marker to
+wing marker), so swinging your arms down to flap never counts as folding them. If a marker drops out, the sim shows "Wing lost" with the
+marker count, and the eagle glides until all three are back. Tune the arm
+mapping in `WING` at the top of `js/input.js`.
+
+`tracking/wing_controller.py --sim` still works as an alternative for the
+cardboard wing with three purple dots, using F8 to calibrate.
 
 ## Keys
 
@@ -55,10 +94,19 @@ settings at the top of `js/input.js`.
 - **↑ ↓** / **W S**: tilt the flight angle up or down. Hold to keep tilting;
   the angle stays where you leave it. Press **I** to invert.
 - **Space**: one full wingbeat; hold to keep flapping
+- **G**: altitude graph on or off
 - **C**: chase, wide, or eagle's-eye camera
 - **T**: morning, midday, or golden hour
 - **Q**: graphics quality: ultra low, low, medium, or high
+- **K**: calibrate the camera wings; **L**: live camera, marker view, or off (with `server.py`)
 - **V**: variometer beeps; **M**: mute; **R**: respawn; **Esc**: pause
+
+## Altitude graph
+
+The top-right panel plots the last 60 seconds. The gold line is your altitude
+and the green profile is the ground you passed over, so the gap between them is
+your clearance. The header shows your peak in that window and how much you've
+climbed or dropped in the last 10 seconds. Press **G** to hide it.
 
 ## How the flying works
 
@@ -90,6 +138,8 @@ settings at the top of `js/input.js`.
 | `js/environment.js` | Atmospheric sky, image-based lighting, sun shadows, ocean, haze |
 | `js/clouds.js`      | Instanced billboard cumulus, sorted back to front          |
 | `js/bird.js`        | Procedural eagle with jointed, animated wings              |
+| `server.py`         | Serves the sim on the Cloudbound camera bridge and streams `/pose` |
+| `js/altgraph.js`    | Live altitude-over-time graph in the HUD                   |
 | `js/input.js`       | Live wing stream (`/pose`), keyboard and gamepad           |
 | `js/audio.js`       | Synthesized wind, wingbeats, splashes and vario            |
 

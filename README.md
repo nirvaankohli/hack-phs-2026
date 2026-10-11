@@ -17,7 +17,7 @@ physical-wing calibration, API integration, and verification commands.
 games such as GeoFS or YSFlight: tilt to bank, raise/lower to pitch. Click
 **START** (3-second countdown) or press **F8** with the wing level to
 calibrate and start; again to pause. Input is released whenever a dot is lost.
-Use one purple dot on each wingtip, or `--dots 5` for the full 5-dot wing.
+Use one purple dot on each wingtip, `--dots 3` to add one in the middle (the default with `--sim`), or `--dots 5` for the full 5-dot wing.
 
 ```
 pip install -r tracking/requirements.txt
@@ -38,6 +38,7 @@ controller, the eagle copies your arms: tilt to bank, hold high or low to set
 the flight angle, and beat down to flap and gain height.
 
 ```
-python tracking/wing_controller.py --sim              # serves and opens the sim; press F8 to start
-python -m http.server 8123 --directory sim            # keyboard-only, then open http://localhost:8123
+.venv\Scripts\python sim\server.py                    # camera wings via the Cloudbound bridge; press K to calibrate
+python tracking/wing_controller.py --sim              # cardboard wing alternative; press F8
+python -m http.server 8123 --directory sim            # keyboard only, then open http://localhost:8123
 ```

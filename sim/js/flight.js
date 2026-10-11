@@ -107,7 +107,7 @@ export class Flight {
     const thrust = 4.5 * power;
     this.speed = clamp(this.speed + (-G * Math.sin(this.gamma) - drag + thrust) * dt, 2, 75);
     // Lift beyond the bird's weight while the wings drive down; it fades between beats.
-    this.climbBoost = (this.climbBoost + 9 * power * dt) * Math.exp(-dt * 1.5);
+    this.climbBoost = (this.climbBoost + 16 * power * dt) * Math.exp(-dt * 1.2);
 
     // Coordinated turn: bank angle sets the turn rate.
     this.heading -= G * Math.tan(this.bank) / Math.max(this.speed, 6) * dt;

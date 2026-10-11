@@ -1,6 +1,6 @@
 """Turn the cardboard wing into a controller for any flight game.
 
-Put a dot on each wingtip (or use --dots 5 for the full 5-dot wing).
+Put a dot on each wingtip (--dots 3 adds one in the center, --dots 5 is the full 5-dot wing).
 Tilt the wing to bank, raise or lower it to pitch, and swing it down sharply
 to flap. Emulated input goes to whichever window has focus, so control starts
 paused: hold the wing level, click into the game, then press F8 to calibrate
@@ -11,7 +11,7 @@ sees dots that aren't there, press M to view the color mask and lower the slider
     python wing_controller.py                                    # GeoFS / flight sims
     python wing_controller.py --hotkey f11 --split               # YSFlight, side by side
     python wing_controller.py --voice                            # ElevenLabs callouts
-    python wing_controller.py --sim                              # Skyborne bird sim (sim/)
+    python wing_controller.py --sim                              # Skyborne bird sim (sim/), 3 dots
     python wing_controller.py --gamepad                          # analog Xbox stick
 """
 
@@ -41,6 +41,16 @@ def tip_pose(points):
     span = left[0] - right[0]
     # Camera Y grows downward, so a raised left tip has the smaller Y.
     return math.degrees(math.atan2(right[1] - left[1], span)), (left[1] + right[1]) / 2, span
+
+
+def three_dot_pose(points):
+    """Pose from wingtip, center and wingtip dots, in the same form as wing_pose.
+
+    Roll and span come from the tips; height averages all three for steadier pitch.
+    """
+    right, center, left = sorted(points)
+    roll, _, span = tip_pose([right, left])
+    return roll, (right[1] + center[1] + left[1]) / 3, span
 
 
 def largest_dots(mask, min_area, count=5):
@@ -241,8 +251,9 @@ def main():
     parser.add_argument("--split", action="store_true",
                         help="Dock the tracker window on the right half of the screen, "
                              "leaving the left half for the game")
-    parser.add_argument("--dots", type=int, choices=(2, 5), default=2,
-                        help="Markers on the wing: 2 (one per wingtip) or 5 (default: 2)")
+    parser.add_argument("--dots", type=int, choices=(2, 3, 5), default=None,
+                        help="Markers on the wing: 2 (one per wingtip), 3 (tips and center), "
+                             "or 5 (default: 3 with --sim, otherwise 2)")
     parser.add_argument("--sim", action="store_true",
                         help="Fly the Skyborne bird sim: serves it at http://localhost:8123 and "
                              "streams the live wing pose to it instead of pressing keys")
@@ -251,6 +262,8 @@ def main():
                         help="Spoken ElevenLabs callouts; needs ELEVENLABS_API_KEY")
     parser.add_argument("--voice-id", default=None, help="ElevenLabs voice ID")
     args = parser.parse_args()
+    if args.dots is None:
+        args.dots = 3 if args.sim else 2
 
     callouts = None
     if args.voice:
@@ -334,6 +347,8 @@ def main():
             pose = None
             if len(points) == args.dots == 5:
                 pose = wing_pose(measurements(points))
+            elif len(points) == args.dots == 3:
+                pose = three_dot_pose(points)
             elif len(points) == args.dots == 2:
                 pose = tip_pose(points)
             if pose and pose[2] <= 0:
@@ -400,9 +415,9 @@ def main():
             if pose and args.dots == 5:
                 draw_tracking(view, points)
             elif pose:
-                tips = [(round(x), round(y)) for x, y in points]
-                cv2.line(view, *tips, (90, 210, 255), 2, cv2.LINE_AA)
-                for point, label in zip(tips, ("R", "L")):
+                dots = [(round(x), round(y)) for x, y in points]
+                cv2.polylines(view, [np.array(dots)], False, (90, 210, 255), 2, cv2.LINE_AA)
+                for point, label in zip(dots, ("R", "C", "L") if args.dots == 3 else ("R", "L")):
                     cv2.circle(view, point, 9, (255, 255, 255), 2, cv2.LINE_AA)
                     cv2.putText(view, label, (point[0] + 12, point[1] - 12),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)

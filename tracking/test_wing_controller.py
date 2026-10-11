@@ -3,8 +3,9 @@ import unittest
 import cv2
 import numpy as np
 
-from wing_controller import FlapDetector, KeyAxis, largest_dots, shape, tip_pose, wing_pose
-from wing_tracker import measurements
+from wing_controller import (FlapDetector, KeyAxis, largest_dots, shape, three_dot_pose,
+                             tip_pose, wing_pose)
+from wing_tracker import detect_points, measurements
 
 
 class ControllerTests(unittest.TestCase):
@@ -63,6 +64,27 @@ class ControllerTests(unittest.TestCase):
         tilted = [(x, 100 + (200 - x) * 0.3) for x, _ in self.level]
         roll, _, _ = tip_pose([tilted[0], tilted[4]])
         self.assertAlmostEqual(roll, wing_pose(measurements(tilted))[0])
+
+    def test_three_dots_roll_from_tips_and_height_from_all(self):
+        tilted = [(40, 148), (200, 130), (360, 52)]
+        roll, height, span = three_dot_pose(tilted)
+        self.assertAlmostEqual(roll, tip_pose([tilted[0], tilted[2]])[0])
+        self.assertGreater(roll, 10)
+        self.assertEqual((height, span), (110, 320))
+
+    def test_three_purple_dots_in_a_camera_frame_give_a_pose(self):
+        # Camera-right is the wearer's left: raise it and the pose should bank right.
+        frame = np.full((300, 480, 3), 200, np.uint8)
+        for center in [(60, 180), (240, 150), (420, 110)]:
+            cv2.circle(frame, center, 14, (192, 72, 120), -1)  # BGR for the default #7848C0
+        cv2.circle(frame, (300, 260), 4, (192, 72, 120), -1)  # A speck that must be ignored.
+        _, mask = detect_points(frame, "#7848C0", 8, 80, 30)
+        points, found = largest_dots(mask, 30, 3)
+        self.assertEqual(len(points), 3)
+        roll, height, span = three_dot_pose(points)
+        self.assertGreater(roll, 10)
+        self.assertAlmostEqual(height, 440 / 3, delta=1)
+        self.assertAlmostEqual(span, 360, delta=2)
 
 
 if __name__ == "__main__":

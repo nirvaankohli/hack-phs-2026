@@ -3,10 +3,13 @@
 //   pitch      -1..1  flight-angle command (+ = nose up)
 //   flapPower   0..1  how hard the wings are pushing down right now
 //   stroke     -1..1  where the bird's wings sit in their beat (+ = raised)
+//   strokes    [left, right] per-wing strokes when the camera sees each wing
 //
-// With `wing_controller.py --sim` the live wing pose streams in over /pose and
-// the bird copies the arms directly: tilt banks, holding the wing up or down
-// sets the flight angle, and the speed of each downstroke becomes lift.
+// With `python sim/server.py` (the Cloudbound camera bridge) or
+// `wing_controller.py --sim`, the live wing pose streams in over /pose and the
+// bird copies the arms directly: tilting banks, holding both wings up or down
+// sets the flight angle, folding them in tucks into a dive, each wing follows
+// its arm, and the speed of each downstroke becomes lift.
 
 const ROLL_LEFT = ['ArrowLeft', 'KeyA'];
 const ROLL_RIGHT = ['ArrowRight', 'KeyD'];
@@ -21,14 +24,21 @@ const GAMEPAD_DEADZONE = 0.08;
 const BEAT = { raise: 0.1, down: 0.25, recover: 0.15 };
 const BEAT_LENGTH = BEAT.raise + BEAT.down + BEAT.recover;
 
-// Live wing tuning, in the same units wing_controller.py sends.
+// Live wing tuning, in calibrated wingspans (what sim/server.py and
+// wing_controller.py --sim send). Tuned for arm-worn wings on the camera bridge.
 const WING = {
-  maxRoll: 30,        // degrees of wing tilt for a full bank
+  maxRoll: 25,        // degrees of wing tilt for a full bank
   holdTime: 0.7,      // seconds: slower height changes count as holding a pitch
   pitchRange: 0.25,   // wingspans above/below neutral for a full pitch command
   strokeRange: 0.3,   // wingspans of quick motion drawn as a full wingbeat
-  minDownstroke: 0.5, // wingspans per second before a downward motion counts as flapping
-  fullDownstroke: 2.5,
+  minDownstroke: 0.35, // wingspans per second before a downward motion counts as flapping
+  fullDownstroke: 1.6,
+  tuckStart: 0.85,    // arm-reach fraction where folding the wings starts a dive
+  tuckFull: 0.6,
+  // Flapping arms aren't holding a pose: while they move faster than this
+  // (wingspans per second, averaged), the held angle freezes and tucks are ignored.
+  stillBelow: 0.25,
+  movingAbove: 0.7,
 };
 
 const shape = (value, deadzone) =>
@@ -37,13 +47,19 @@ const shape = (value, deadzone) =>
 class WingStream {
   constructor(url = '/pose') {
     this.url = url;
-    this.connected = false;
+    this.opened = false;
     this.active = false;
     this.lastMessage = 0;
     this.roll = 0;
     this.lift = 0;
+    this.left = null;
+    this.right = null;
+    this.span = 1;
+    this.calibrated = false;
+    this.dots = 0;
     this.held = 0;
     this.velocity = 0;
+    this.motion = 0;
     this.previous = null;
     this.connect();
   }
@@ -51,11 +67,11 @@ class WingStream {
   connect() {
     if (!window.EventSource) return;
     const source = new EventSource(this.url);
-    source.onopen = () => { this.connected = true; };
+    source.onopen = () => { this.opened = true; };
     source.onmessage = (event) => this.receive(JSON.parse(event.data));
     source.onerror = () => {
       // A plain static server has no /pose; try again later in case the controller starts.
-      if (!this.connected) {
+      if (!this.opened) {
         source.close();
         setTimeout(() => this.connect(), 8000);
       }
@@ -65,9 +81,13 @@ class WingStream {
   receive(data) {
     this.lastMessage = performance.now();
     this.active = !!data.active;
+    this.calibrated = data.calibrated ?? this.active;
+    this.dots = data.dots ?? 0;
+    this.camera = data.camera ?? true;
     if (!this.active) {
       this.previous = null;
       this.velocity = 0;
+      this.motion = 0;
       return;
     }
     if (this.previous) {
@@ -75,7 +95,9 @@ class WingStream {
       if (dt > 0 && dt < 0.25) {
         const v = (data.lift - this.previous.lift) / dt;
         this.velocity += (v - this.velocity) * 0.6;
-        this.held += (data.lift - this.held) * (1 - Math.exp(-dt / WING.holdTime));
+        this.motion += (Math.abs(v) - this.motion) * (1 - Math.exp(-dt / 0.3));
+        // Only a still-ish pose sets the flight angle, so a flap's down-and-up doesn't dive.
+        this.held += (data.lift - this.held) * (1 - Math.exp(-dt / WING.holdTime)) * this.stillness;
       }
     } else {
       this.held = data.lift;
@@ -83,10 +105,23 @@ class WingStream {
     this.previous = data;
     this.roll = data.roll;
     this.lift = data.lift;
+    this.left = data.left ?? null;
+    this.right = data.right ?? null;
+    this.span = data.span ?? 1;
+  }
+
+  /** 1 while the arms are held still, falling to 0 while they're flapping. */
+  get stillness() {
+    return Math.min(1, Math.max(0, (WING.movingAbove - this.motion) / (WING.movingAbove - WING.stillBelow)));
+  }
+
+  /** True while a camera bridge is streaming, even if it can't see the wing right now. */
+  get connected() {
+    return performance.now() - this.lastMessage < 2000;
   }
 
   get live() {
-    return this.active && performance.now() - this.lastMessage < 500;
+    return this.active && performance.now() - this.lastMessage < 1200;
   }
 }
 
@@ -98,6 +133,7 @@ export class Input {
     this.pitch = 0;
     this.flapPower = 0;
     this.stroke = 0;
+    this.strokes = null;
     this.invertPitch = false;
     this.source = 'keyboard';
     this.beat = BEAT_LENGTH;
@@ -127,6 +163,7 @@ export class Input {
       this.flapQueued = false;
       return;
     }
+    this.strokes = null;
     const roll = this.any(ROLL_RIGHT) - this.any(ROLL_LEFT);
     let pitch = this.any(NOSE_UP) - this.any(NOSE_DOWN);
     if (this.invertPitch) pitch = -pitch;
@@ -180,9 +217,14 @@ export class Input {
     this.roll = shape(w.roll / WING.maxRoll, 0.08);
     let pitch = shape(w.held / WING.pitchRange, 0.12);
     if (this.invertPitch) pitch = -pitch;
-    this.pitch = pitch;
+    // Folding the wings in, like a stooping falcon, overrides into a steep dive.
+    const tuck = Math.min(1, Math.max(0, (WING.tuckStart - w.span) / (WING.tuckStart - WING.tuckFull)))
+      * w.stillness;
+    this.pitch = pitch + (-1 - pitch) * tuck;
     // The bird's wings sit where the arms are, relative to the held position.
-    this.stroke = Math.max(-1, Math.min(1, (w.lift - w.held) / WING.strokeRange));
+    const stroke = (lift) => Math.max(-1, Math.min(1, (lift - w.held) / WING.strokeRange));
+    this.stroke = stroke(w.lift);
+    this.strokes = w.left === null ? null : [stroke(w.left), stroke(w.right)];
     this.flapPower = Math.min(1, Math.max(0,
       (-w.velocity - WING.minDownstroke) / (WING.fullDownstroke - WING.minDownstroke)));
   }

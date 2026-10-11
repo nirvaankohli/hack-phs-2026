@@ -159,15 +159,16 @@ export function createBird() {
     const hand = new THREE.Mesh(handGeometry, wingMaterial);
     hand.position.set(-0.02, 0, 0.02);
     wrist.add(hand);
-    return { shoulder, wrist, side };
+    return { shoulder, wrist, side, hand: 0 };
   });
 
   root.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 
-  const state = { phase: 0, flap: 0, time: 0, hand: 0 };
+  const state = { phase: 0, flap: 0, time: 0 };
 
   /**
-   * pose: { stroke -1..1 (where the wings are in their beat; + = raised), or
+   * pose: { strokes [left, right] -1..1 (each wing follows its own arm), or
+   *         stroke -1..1 (both wings; + = raised), or
    *         flapping 0..1 for an automatic beat (the circling hawks),
    *         tuck 0..1 (dive), bank radians, landed bool, stall 0..1, speed }
    */
@@ -175,13 +176,14 @@ export function createBird() {
     state.time += dt;
     state.flap += ((pose.flapping > 0 ? 1 : 0) - state.flap) * (1 - Math.exp(-dt * 10));
     state.phase += dt * (pose.landed ? 0 : 9.5 + (pose.stall || 0) * 6);
-    // The player's wing sets the stroke directly; the hand trails the arm a little.
-    const beat = pose.stroke ?? Math.sin(state.phase) * state.flap;
-    state.hand += (beat - state.hand) * (1 - Math.exp(-dt * 14));
-    const lag = pose.stroke === undefined ? Math.sin(state.phase - 0.9) * state.flap : state.hand;
+    const auto = pose.stroke === undefined && !pose.strokes;
     const tuck = pose.landed ? 1 : pose.tuck;
     const flutter = (pose.stall || 0) * Math.sin(state.time * 31) * 0.08;
     for (const w of wings) {
+      // The player's arms set the stroke directly; the hand trails the arm a little.
+      const beat = pose.strokes?.[w.side < 0 ? 0 : 1] ?? pose.stroke ?? Math.sin(state.phase) * state.flap;
+      w.hand += (beat - w.hand) * (1 - Math.exp(-dt * 14));
+      const lag = auto ? Math.sin(state.phase - 0.9) * state.flap : w.hand;
       // Slight dihedral when gliding; the wing on the inside of a turn drops a little.
       const glide = 0.08 + Math.sin(state.time * 1.3) * 0.015;
       const roll = -pose.bank * 0.12 * w.side;
@@ -201,7 +203,9 @@ export function createBird() {
     head.rotation.z = pose.landed ? 0 : pose.bank * 0.55;
     head.rotation.y = pose.landed ? Math.sin(state.time * 0.7) * 0.6 : 0;
     legs.visible = pose.landed;
-    model.position.y = pose.landed ? 0.32 : -beat * 0.03;
+    const stroke = pose.stroke ?? (pose.strokes ? (pose.strokes[0] + pose.strokes[1]) / 2
+      : Math.sin(state.phase) * state.flap);
+    model.position.y = pose.landed ? 0.32 : -stroke * 0.03;
     model.rotation.x = pose.landed ? 0.35 : 0;
   }
 

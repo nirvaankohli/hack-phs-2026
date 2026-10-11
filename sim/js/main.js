@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Sound } from './audio.js';
 import { createBird } from './bird.js';
+import { AltitudeGraph } from './altgraph.js';
 import { Clouds } from './clouds.js';
 import { Environment, PRESETS } from './environment.js';
 import { Flight } from './flight.js';
@@ -130,6 +131,14 @@ for (let d = -360; d <= 720; d += 15) {
   hud.strip.append(mark);
 }
 
+const altitudeGraph = new AltitudeGraph({
+  canvas: document.getElementById('altgraph-canvas'),
+  value: document.getElementById('altgraph-value'),
+  trend: document.getElementById('altgraph-trend'),
+});
+const altitudePanel = document.getElementById('altgraph');
+let graphFrame = 0;
+
 let message = { until: 0, priority: 0 };
 function say(text, sub = '', seconds = 2.5, priority = 1) {
   const now = performance.now() / 1000;
@@ -147,6 +156,7 @@ let cameraMode = 0;
 const CAMERA_MODES = ['Chase camera', 'Wide camera', "Eagle's eye"];
 let time = 0;
 let hintCooldown = 0;
+let wingWasLive = false;
 
 function setPaused(value) {
   paused = value;
@@ -160,7 +170,112 @@ function begin() {
   if (sound.ctx?.state === 'suspended') sound.ctx.resume();
   started = true;
   setPaused(false);
+  startCamera();
 }
+
+// ---- Camera bridge (python sim/server.py) --------------------------------
+// Served by the Cloudbound bridge, the page can start the webcam and calibrate.
+// Served by anything else, /health is missing and this stays off.
+
+const bridge = { available: false, started: false, calibrating: false };
+const cameraIndex = Number(new URLSearchParams(location.search).get('camera')) || 0;
+fetch('/health').then((r) => (r.ok ? r.json() : null)).then((data) => {
+  if (!data?.ok) return;
+  bridge.available = true;
+  document.getElementById('calibrate-key').hidden = false;
+  // Warm the webcam up while the title screen is showing, so it's ready to fly.
+  startCamera();
+}).catch(() => {});
+
+async function post(path, body = {}) {
+  const response = await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || response.statusText);
+  }
+  return response.json();
+}
+
+function startCamera() {
+  if (!bridge.available || bridge.started) return;
+  bridge.started = true;
+  post('/camera/start', { index: cameraIndex }).then(() => setLivecamMode(livecam.mode)).catch((error) => {
+    bridge.started = false;
+    say('Camera did not start', error.message, 4, 3);
+  });
+}
+
+// Live camera picture-in-picture: the bridge's preview with tracked markers drawn,
+// or a marker view that dims everything except the marker color (for tuning).
+const LIVECAM_MODES = ['camera', 'markers', 'off'];
+const livecam = {
+  mode: 0, loading: false, markerQuery: '', hasFrame: false,
+  panel: document.getElementById('livecam'), image: document.getElementById('livecam-img'),
+  markers: document.getElementById('livecam-markers'), label: document.getElementById('livecam-mode'),
+};
+
+function livecamNext() {
+  const mode = LIVECAM_MODES[livecam.mode];
+  if (!bridge.started || mode === 'off' || livecam.loading) return;
+  livecam.loading = true;
+  const view = mode === 'markers' ? livecam.markerQuery : '?dots=true';
+  livecam.image.src = `/camera/frame${view}${view ? '&' : '?'}t=${Date.now()}`;
+}
+// One request at a time: ask for the next frame once this one arrives (~12 fps).
+livecam.image.addEventListener('load', () => {
+  livecam.loading = false;
+  livecam.hasFrame = true;
+  setTimeout(livecamNext, 80);
+});
+livecam.image.addEventListener('error', () => { livecam.loading = false; setTimeout(livecamNext, 500); });
+
+function setLivecamMode(index) {
+  livecam.mode = index;
+  const mode = LIVECAM_MODES[index];
+  livecam.panel.hidden = !bridge.started || mode === 'off';
+  livecam.label.textContent = mode === 'markers' ? 'marker view' : mode;
+  if (mode === 'markers') {
+    // The marker view needs the tracker's current color and tolerances.
+    fetch('/tracking/settings').then((r) => r.json()).then((s) => {
+      livecam.markerQuery = `?color=${encodeURIComponent(s.color)}&hue_tolerance=${s.hue_tolerance}`
+        + `&shade_tolerance=${s.shade_tolerance}&min_dot_area=${s.min_dot_area}`;
+      livecamNext();
+    }).catch(() => {});
+  } else {
+    livecamNext();
+  }
+}
+
+function updateLivecam() {
+  if (livecam.panel.hidden) return;
+  const w = input.wing;
+  const status = !w.connected || !livecam.hasFrame ? 'Starting camera…'
+    : `${w.dots}/3 markers` + (w.calibrated ? (w.live ? ' · tracking' : ' · lost') : ' · press K');
+  if (livecam.markers.textContent !== status) livecam.markers.textContent = status;
+  livecam.markers.className = w.live ? 'ok' : 'warn';
+}
+
+async function calibrate() {
+  if (!bridge.available || bridge.calibrating) return;
+  startCamera();
+  bridge.calibrating = true;
+  for (let n = 3; n > 0; n--) {
+    say(`Calibrating in ${n}`, 'Spread your wings level, all 3 markers in view', 1.1, 3);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  try {
+    await post('/camera/calibrate');
+    say('Calibrated', 'The eagle follows your arms now', 2.5, 3);
+  } catch (error) {
+    say('Calibration failed', error.message, 4, 3);
+  }
+  bridge.calibrating = false;
+}
+
+// Release the webcam when the tab closes.
+addEventListener('pagehide', () => { if (bridge.started) navigator.sendBeacon('/camera/stop'); });
 
 hud.overlay.addEventListener('click', () => { if (ready) begin(); });
 addEventListener('keydown', (e) => {
@@ -171,6 +286,17 @@ addEventListener('keydown', (e) => {
   }
   switch (e.code) {
     case 'Escape': case 'KeyP': case 'KeyH': setPaused(true); break;
+    case 'KeyK': calibrate(); break;
+    case 'KeyG':
+      altitudePanel.hidden = !altitudePanel.hidden;
+      say(`Altitude graph ${altitudePanel.hidden ? 'off' : 'on'}`, '', 1.5, 2);
+      break;
+    case 'KeyL':
+      if (!bridge.available) break;
+      startCamera();
+      setLivecamMode((livecam.mode + 1) % LIVECAM_MODES.length);
+      say(`Live camera: ${livecam.label.textContent}`, '', 1.5, 2);
+      break;
     case 'KeyC':
       cameraMode = (cameraMode + 1) % CAMERA_MODES.length;
       say(CAMERA_MODES[cameraMode], '', 1.5, 2);
@@ -230,6 +356,7 @@ function updateBird(dt) {
   bird.animate(dt, {
     // Wings mirror the player's stroke; a stalled bird flails on its own.
     stroke: f.stall > 0.6 && f.state === 'flying' ? Math.sin(time * 14) * 0.8 : input.stroke,
+    strokes: f.stall > 0.6 ? null : input.strokes,
     tuck: f.tuck, bank: f.bank, landed: f.state === 'landed', stall: f.stall,
     speed: f.speed, pitchInput: input.pitch,
   });
@@ -348,6 +475,9 @@ function updateSpray(dt) {
 }
 
 function updateHud() {
+  updateLivecam();
+  // The graph only needs ~20 redraws a second.
+  if (!altitudePanel.hidden && ++graphFrame % 3 === 0) altitudeGraph.draw(time);
   const f = flight;
   hud.alt.textContent = Math.round(f.position.y);
   hud.agl.textContent = Math.round(Math.max(0, f.altitude ?? 0));
@@ -364,6 +494,14 @@ function updateHud() {
   hud.flap.style.opacity = 0.25 + 0.75 * Math.min(1, f.flapPower * 1.5);
 
   const now = performance.now() / 1000;
+  if (input.wing.live !== wingWasLive) {
+    wingWasLive = input.wing.live;
+    if (wingWasLive) say('Wing connected', 'The eagle follows your arms', 2.5, 2);
+    else if (input.wing.connected) say('Wing lost', `${input.wing.dots}/3 markers in view`, 3, 2);
+  }
+  if (bridge.available && started && !bridge.calibrating && input.wing.connected && !input.wing.calibrated) {
+    say('Calibrate your wings', `Spread them level and press K · ${input.wing.dots}/3 markers in view`, 0.3, 1);
+  }
   if (f.state === 'landed') say('Perched', 'Flap to take off', 0.2, 3);
   else if (f.state === 'crashed') say(f.crashedInWater ? 'Splash!' : 'Crashed', 'Back to the sky in a moment…', 0.2, 3);
   else if (f.stall > 0.5) say('Stall', 'Lower the wing to dive and regain speed', 0.3, 2);
@@ -410,6 +548,7 @@ function frame() {
       if (event === 'splash') sound.splash(); else sound.thud();
     }
     sound.update(flight.speed, flight.vario, flight.state === 'flying');
+    altitudeGraph.push(time, flight.position.y, flight.position.y - (flight.altitude ?? 0));
   } else {
     sound.update(0, 0, false);
   }
@@ -440,4 +579,4 @@ setTimeout(() => {
 }, 30);
 
 // Handy for debugging from the console.
-window.sim = { flight, input, terrain, environment, camera, renderer, scene, applyPreset, get time() { return time; } };
+window.sim = { flight, input, terrain, environment, camera, renderer, scene, applyPreset, altitudeGraph, get time() { return time; } };

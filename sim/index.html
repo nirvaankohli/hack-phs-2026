@@ -55,7 +55,28 @@
     #start { margin-top: 18px; font-size: 16px; color: var(--ink); }
     #start .pulse { animation: pulse 1.6s ease-in-out infinite; }
     @keyframes pulse { 50% { opacity: 0.35; } }
-    @media (max-width: 700px) { #compass, #keys { display: none; } }
+    #altgraph { top: 16px; right: 16px; width: 300px; padding: 10px 12px 8px; }
+    #altgraph header { display: flex; align-items: baseline; justify-content: space-between; }
+    #altgraph .label { color: var(--dim); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+    #altgraph .value { font-size: 20px; font-variant-numeric: tabular-nums; }
+    #altgraph .unit { font-size: 12px; color: var(--dim); margin-left: 3px; }
+    #altgraph .sub { display: flex; justify-content: space-between; align-items: center; margin: 2px 0 6px;
+      font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+    #altgraph-trend[data-direction="up"] { color: var(--good); }
+    #altgraph-trend[data-direction="down"] { color: var(--ink); }
+    #altgraph .legend { display: flex; gap: 12px; }
+    #altgraph .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    #altgraph .swatch-line { width: 14px; height: 2px; border-radius: 1px; background: #ffcf6e; }
+    #altgraph .swatch-fill { width: 10px; height: 10px; border-radius: 2px; background: rgba(118, 142, 96, 0.8);
+      box-shadow: inset 0 1px 0 rgba(170, 196, 140, 0.9); }
+    #altgraph canvas { display: block; width: 100%; height: 112px; }
+    #livecam { bottom: 44px; right: 16px; width: min(260px, 38vw); padding: 6px; }
+    #livecam img { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; background: #0b1016; object-fit: cover; }
+    #livecam .row { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 11px;
+      letter-spacing: 0.08em; text-transform: uppercase; margin: 5px 2px 0; }
+    #livecam .ok { color: var(--good); }
+    #livecam .warn { color: var(--accent); }
+    @media (max-width: 700px) { #compass, #keys, #altgraph { display: none; } #livecam { bottom: 16px; } }
   </style>
   <script type="importmap">
     {
@@ -79,6 +100,18 @@
     <div id="stamina" title="Flapping stamina"><div></div></div>
   </div>
 
+  <div id="altgraph" class="hud panel" aria-label="Altitude over the last 60 seconds">
+    <header>
+      <span class="label">Altitude · last 60 s</span>
+      <span class="value"><span id="altgraph-value">0</span><span class="unit">m peak</span></span>
+    </header>
+    <div class="sub">
+      <span id="altgraph-trend" data-direction="level">▲ 0 m / 10 s</span>
+      <span class="legend"><span><i class="swatch-line"></i>Eagle</span><span><i class="swatch-fill"></i>Ground</span></span>
+    </div>
+    <canvas id="altgraph-canvas"></canvas>
+  </div>
+
   <div id="compass" class="hud"><div id="compass-strip"></div></div>
   <div id="message" class="hud"></div>
 
@@ -94,8 +127,13 @@
     <div class="row"><span id="source">keyboard</span><span id="flapdot">● flap</span></div>
   </div>
 
+  <div id="livecam" class="hud panel" hidden>
+    <img id="livecam-img" alt="Live camera with tracked markers">
+    <div class="row"><span id="livecam-markers">Starting camera…</span><span id="livecam-mode">camera</span></div>
+  </div>
+
   <div id="keys" class="hud">
-    <b>H</b> help · <b>C</b> camera · <b>T</b> time of day · <b>Q</b> graphics · <b>V</b> vario · <b>M</b> mute · <b>Esc</b> pause
+    <span id="calibrate-key" hidden><b>K</b> calibrate wings · <b>L</b> live camera · </span><b>H</b> help · <b>G</b> graph · <b>C</b> camera · <b>T</b> time of day · <b>Q</b> graphics · <b>V</b> vario · <b>M</b> mute · <b>Esc</b> pause
   </div>
 
   <div id="overlay">
@@ -105,8 +143,9 @@
         cumulus clouds and the updrafts on windward ridges, stoop into a dive,
         and land wherever you like.</p>
       <table>
-        <tr><td>Wing controller</td><td>Run <code>python tracking/wing_controller.py --sim</code>
-          (it opens this page), hold the wing level and press <b>F8</b>. The eagle copies your arms:
+        <tr><td>Camera wings</td><td>Put a marker on each wing and one on your body between them, run
+          <code>python sim/server.py</code> (it opens this page), start flying, spread your wings level
+          and press <b>K</b> to calibrate. The eagle copies your arms:
           tilt to bank, hold the wing high to climb or low to dive, and beat down to flap and gain height.</td></tr>
         <tr><td>Keyboard</td><td><b>← →</b> / <b>A D</b> bank · <b>↑ ↓</b> / <b>W S</b> tilt the
           flight angle up or down (it stays where you leave it; <b>I</b> inverts) ·
