@@ -24,9 +24,12 @@ def largest_dot_contours(mask, min_area):
     return sorted(candidates, key=lambda c: (-cv2.contourArea(c), *cv2.boundingRect(c)[:2]))[:3]
 
 
-def detect_game_points(frame, color, hue_tolerance, shade_tolerance, min_area):
+def detect_game_points(frame, color, hue_tolerance, shade_tolerance, min_area, second_color=None):
     # Reuse the tracker's color mask; choose blobs only in the game adapter.
     _, mask = detect_points(frame, color, hue_tolerance, shade_tolerance, min_area)
+    if second_color is not None:
+        _, second_mask = detect_points(frame, second_color, hue_tolerance, shade_tolerance, min_area)
+        mask = cv2.bitwise_or(mask, second_mask)
     selected = largest_dot_contours(mask, min_area)
     points = []
     for contour in selected:
@@ -58,14 +61,13 @@ def three_point_measurements(points):
 
 
 class FlightClassifier:
-    """Both wing Ys oscillate to flap; lower, narrower held wings dive."""
+    """Both wing Ys oscillate to flap; both below the center dot means dive."""
     WINDOW = 0.70
     MOTION_STEP = 0.012  # Fraction of calibrated spread-wing span; rejects jitter.
     MOTION_RANGE = 0.030
 
     def __init__(self):
         self.span = None
-        self.neutral_y = (0.0, 0.0)
         self.reset_motion()
 
     def reset_motion(self):
@@ -75,15 +77,13 @@ class FlightClassifier:
         self.last_time = None
         self.flap_until = 0.0
         self.diving = False
-        self.tuck_since = None
+        self.lowered_since = None
 
     def calibrate(self, values):
         span = values['left_distance_from_center'] + values['right_distance_from_center']
         if span < 30:
             raise ValueError('Spread both wings so all three markers are separated.')
         self.span = span
-        self.neutral_y = (values['left_height_relative_to_average'] / span,
-                          values['right_height_relative_to_average'] / span)
         self.reset_motion()
 
     def update(self, values, now):
@@ -94,8 +94,6 @@ class FlightClassifier:
         self.last_time = now
         ys = (values['left_height_relative_to_average'] / self.span,
               values['right_height_relative_to_average'] / self.span)
-        span = values['left_distance_from_center'] + values['right_distance_from_center']
-        ratio = span / self.span
         self.samples.append((now, *ys))
         while self.samples and now - self.samples[0][0] > self.WINDOW:
             self.samples.popleft()
@@ -113,25 +111,24 @@ class FlightClassifier:
             heights = [sample[side + 1] for sample in self.samples]
             reversals = sum(events[i][1] != events[i - 1][1] for i in range(1, len(events)))
             active.append(bool(events) and now - events[-1][0] < 0.22
-                          and reversals >= 1 and max(heights) - min(heights) >= self.MOTION_RANGE)
+                          and reversals >= 2 and max(heights) - min(heights) >= self.MOTION_RANGE)
         if all(active):
             self.flap_until = now + 0.18
 
-        # Higher steady relative Y is the calibrated glide pose. Diving must
-        # lower BOTH wings and narrow the span; either signal alone is insufficient.
-        drop = 0.015 if self.diving else 0.025
-        lower = all(y < neutral - drop for y, neutral in zip(ys, self.neutral_y))
-        tucked = lower and ratio < (0.75 if self.diving else 0.65)
+        # Relative Y is positive above the body dot, negative below it.
+        # Scale the small dead zone with calibrated span, independent of tuck.
+        drop = 0.03 if self.diving else 0.05
+        lowered = all(y < -drop for y in ys)
         if now < self.flap_until:
-            self.tuck_since = None
+            self.lowered_since = None
             self.diving = False
             return 'flap'
-        if tucked:
-            if self.tuck_since is None:
-                self.tuck_since = now
-            self.diving = now - self.tuck_since >= 0.35
+        if lowered:
+            if self.lowered_since is None:
+                self.lowered_since = now
+            self.diving = now - self.lowered_since >= 0.18
         else:
-            self.tuck_since = None
+            self.lowered_since = None
             self.diving = False
         return 'dive' if self.diving else 'glide'
 
@@ -191,6 +188,7 @@ class Camera:
         self.lock = Lock()
         self.running = False
         self.thread = None
+        self.second_color = None
         self.frame = None
         self.frame_time = 0.0
         self.values = None
@@ -230,15 +228,17 @@ class Camera:
                         self.state = {'tracking': False, 'state': 'lost', 'message': 'Cannot read camera. Check camera permission and device index.'}
                     sleep(0.15)
                     continue
-                config = tracking_api.settings
+                with self.lock:
+                    config = tracking_api.settings
+                    secondary = self.second_color
                 points, _ = detect_game_points(frame, config.color, config.hue_tolerance,
-                                           config.shade_tolerance, config.min_dot_area)
+                                           config.shade_tolerance, config.min_dot_area, secondary)
                 now = monotonic()
                 with self.lock:
-                    if config != last_config:
+                    if (config, secondary) != last_config:
                         self.classifier = FlightClassifier()
                         self.dot_memory = DotMemory()
-                        last_config = config
+                        last_config = (config, secondary)
                     if now - self.frame_time > 0.25:
                         self.dot_memory = DotMemory()
                     self.frame = frame
@@ -296,6 +296,18 @@ class CameraSettings(BaseModel):
     index: int = Field(default=0, ge=0, le=10)
 
 
+class GameTrackingSettings(tracking_api.Settings):
+    second_color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+
+
+@app.post('/camera/settings')
+def set_game_tracking(settings: GameTrackingSettings):
+    with camera.lock:
+        tracking_api.settings = tracking_api.Settings(**settings.model_dump(exclude={'second_color'}))
+        camera.second_color = settings.second_color
+    return settings.model_dump()
+
+
 @app.get('/health')
 def health():
     return {'ok': True, 'camera': camera.running}
@@ -313,13 +325,13 @@ def stop():
     return {'ok': True}
 
 
-def highlight_hue(frame, color, hue_tolerance=None, shade_tolerance=None, min_dot_area=None):
+def highlight_hue(frame, color, hue_tolerance=None, shade_tolerance=None, min_dot_area=None, second_color=None):
     """Dim nonmatches and outline significant blobs using the tracker itself."""
     config = tracking_api.settings
     _, selected = detect_game_points(frame, color,
                                      config.hue_tolerance if hue_tolerance is None else hue_tolerance,
                                      config.shade_tolerance if shade_tolerance is None else shade_tolerance,
-                                     config.min_dot_area if min_dot_area is None else min_dot_area)
+                                     config.min_dot_area if min_dot_area is None else min_dot_area, second_color)
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     cv2.drawContours(mask, selected, -1, 255, cv2.FILLED)
     result = (frame * 0.28).astype(np.uint8)
@@ -335,10 +347,11 @@ def frame(color: str | None = Query(default=None, pattern=r'^#[0-9a-fA-F]{6}$'),
           hue_tolerance: int | None = Query(default=None, ge=0, le=90),
           shade_tolerance: int | None = Query(default=None, ge=0, le=255),
           min_dot_area: int | None = Query(default=None, ge=1, le=100000),
-          dots: bool = False):
+          dots: bool = False,
+          second_color: str | None = Query(default=None, pattern=r'^#[0-9a-fA-F]{6}$')):
     image = camera.snapshot(dots=True) if dots else camera.snapshot()
     if color is not None:
-        image = highlight_hue(image, color, hue_tolerance, shade_tolerance, min_dot_area)
+        image = highlight_hue(image, color, hue_tolerance, shade_tolerance, min_dot_area, second_color)
     ok, data = cv2.imencode('.jpg', cv2.flip(image, 1), [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
         raise HTTPException(500, 'Could not encode camera image.')

@@ -26,7 +26,6 @@ func run() -> void:
 	game.show_settings("home")
 	await shot("/tmp/cloudbound-settings.png")
 	game.show_wing_colors()
-	game.on_hues(0, 200, PackedStringArray(), '{"colors":[{"color":"#00FF00","percent":32.5},{"color":"#FF2020","percent":21.0},{"color":"#2060FF","percent":12.0}]}'.to_utf8_buffer())
 	await shot("/tmp/cloudbound-wing-colors.png")
 	game.camera_on = true
 	game.start_run()

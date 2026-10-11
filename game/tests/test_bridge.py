@@ -12,6 +12,38 @@ def pose(span=200, height=0):
             'left_height_relative_to_average': height, 'right_height_relative_to_average': height}
 
 
+class TwoColorTests(unittest.TestCase):
+    def test_two_colors_combine_into_three_markers_without_duplicates(self):
+        import cv2
+        frame = np.zeros((200, 400, 3), dtype=np.uint8)
+        for x, color in [(80, (0, 255, 0)), (200, (0, 0, 255)), (320, (0, 255, 0))]:
+            cv2.circle(frame, (x, 100), 15, color, -1)
+        single, _ = detect_game_points(frame, '#00FF00', 15, 160, 30)
+        combined, _ = detect_game_points(frame, '#00FF00', 15, 160, 30, '#FF0000')
+        duplicate, _ = detect_game_points(frame, '#00FF00', 15, 160, 30, '#00FF00')
+        self.assertEqual(len(single), 2)
+        self.assertEqual(combined, [(80, 100), (200, 100), (320, 100)])
+        self.assertEqual(duplicate, single)
+        self.assertEqual(highlight_hue(frame, '#00FF00', second_color='#FF0000')[100, 200, 2], 255)
+
+    def test_settings_and_preview_accept_optional_second_color(self):
+        from tracking import api as tracking_api
+        original, secondary = tracking_api.settings, camera.second_color
+        try:
+            client = TestClient(app)
+            response = client.post('/camera/settings', json={'color': '#00FF00', 'second_color': '#FF0000'})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(camera.second_color, '#FF0000')
+            with patch.object(camera, 'snapshot', return_value=np.zeros((40, 40, 3), dtype=np.uint8)):
+                self.assertEqual(client.get('/camera/frame', params={'color': '#00FF00', 'second_color': '#FF0000'}).status_code, 200)
+                self.assertEqual(client.get('/camera/frame', params={'second_color': 'bad'}).status_code, 422)
+            self.assertEqual(client.post('/camera/settings', json={'second_color': 'bad'}).status_code, 422)
+            self.assertEqual(client.post('/camera/settings', json={'second_color': None}).status_code, 200)
+            self.assertIsNone(camera.second_color)
+        finally:
+            tracking_api.settings, camera.second_color = original, secondary
+
+
 class DotMemoryTests(unittest.TestCase):
     def test_one_missing_frame_holds_pose_but_second_loses_it(self):
         memory = DotMemory()
@@ -204,7 +236,7 @@ class ClassifierTests(unittest.TestCase):
     def test_single_lowering_is_not_flapping(self):
         model = self.model()
         for i, y in enumerate([10, 4, -2, -8, -14, -14, -14]):
-            self.assertEqual(model.update(pose(height=y), i * 0.1), 'glide')
+            self.assertNotEqual(model.update(pose(height=y), i * 0.1), 'flap')
 
     def test_jitter_and_one_wing_motion_do_not_flap(self):
         for one_wing in [False, True]:
@@ -215,10 +247,12 @@ class ClassifierTests(unittest.TestCase):
                     values['right_height_relative_to_average'] = 10
                 self.assertEqual(model.update(values, i * 0.05), 'glide')
 
-    def test_dive_requires_lower_y_on_both_wings_and_narrow_span(self):
+    def test_dive_requires_both_wings_below_center_regardless_of_span(self):
         cases = [(pose(span=80, height=10), 'glide'),
-                 (pose(span=200, height=-10), 'glide'),
-                 (pose(span=80, height=-10), 'dive')]
+                 (pose(span=200, height=-14), 'dive'),
+                 (pose(span=80, height=-14), 'dive'),
+                 (pose(span=200, height=-4), 'glide'),
+                 (pose(span=80, height=-4), 'glide')]
         one_lower = pose(span=80, height=-10)
         one_lower['right_height_relative_to_average'] = 10
         cases.append((one_lower, 'glide'))
@@ -228,6 +262,17 @@ class ClassifierTests(unittest.TestCase):
                 state = model.update(values, i * 0.1)
             self.assertEqual(state, expected)
             self.assertEqual(model.update(pose(height=10), 1.0), 'glide')
+
+    def test_dive_uses_center_not_calibrated_wing_height(self):
+        model = FlightClassifier()
+        model.calibrate(pose(height=60))
+        for i in range(6):
+            self.assertEqual(model.update(pose(height=2), i * 0.1), 'glide')
+        for i in range(6, 10):
+            state = model.update(pose(height=-14), i * 0.1)
+        self.assertEqual(state, 'dive')
+        self.assertEqual(model.update(pose(height=-8), 1.0), 'dive')
+        self.assertEqual(model.update(pose(height=-4), 1.1), 'glide')
 
     def test_flapping_takes_priority_over_transient_tuck(self):
         model = self.model()
