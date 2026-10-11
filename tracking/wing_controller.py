@@ -10,6 +10,8 @@ sees dots that aren't there, press M to view the color mask and lower the slider
 
     python wing_controller.py                                    # GeoFS / flight sims
     python wing_controller.py --hotkey f11 --split               # YSFlight, side by side
+    python wing_controller.py --voice                            # ElevenLabs callouts
+    python wing_controller.py --sim                              # Skyborne bird sim (sim/)
     python wing_controller.py --gamepad                          # analog Xbox stick
 """
 
@@ -154,6 +156,16 @@ class GamepadOutput:
         self.pad.update()
 
 
+class SimOutput:
+    """Sends nothing to the keyboard; the Skyborne page reads the pose stream instead."""
+
+    def update(self, roll, pitch, flap):
+        return ["pose -> Skyborne"]
+
+    def release_all(self):
+        pass
+
+
 class FlapDetector:
     """Detect a sharp downward swing of the whole wing."""
 
@@ -231,11 +243,35 @@ def main():
                              "leaving the left half for the game")
     parser.add_argument("--dots", type=int, choices=(2, 5), default=2,
                         help="Markers on the wing: 2 (one per wingtip) or 5 (default: 2)")
+    parser.add_argument("--sim", action="store_true",
+                        help="Fly the Skyborne bird sim: serves it at http://localhost:8123 and "
+                             "streams the live wing pose to it instead of pressing keys")
+    parser.add_argument("--sim-port", type=int, default=8123)
+    parser.add_argument("--voice", action="store_true",
+                        help="Spoken ElevenLabs callouts; needs ELEVENLABS_API_KEY")
+    parser.add_argument("--voice-id", default=None, help="ElevenLabs voice ID")
     args = parser.parse_args()
+
+    callouts = None
+    if args.voice:
+        import voice
+        speaker = voice.from_environment(args.voice_id or voice.DEFAULT_VOICE)
+        speaker.warm_up()
+        callouts = voice.Callouts(speaker)
 
     from pynput.keyboard import Listener
 
-    if args.gamepad:
+    stream = None
+    if args.sim:
+        import webbrowser
+        from sim_bridge import PoseStream, serve_sim
+        stream = PoseStream()
+        serve_sim(stream, args.sim_port)
+        url = f"http://localhost:{args.sim_port}"
+        print(f"Skyborne is at {url}")
+        webbrowser.open(url)
+        output = SimOutput()
+    elif args.gamepad:
         output = GamepadOutput()
     else:
         output = KeyboardOutput(args.roll_keys, args.pitch_keys, args.flap_key)
@@ -249,7 +285,7 @@ def main():
     window = "Wing controller"
     capture = cv2.VideoCapture(args.camera)
     raw_frame = None
-    active = False
+    active = was_active = False
     neutral = None
     roll_axis = pitch_axis = 0.0
     flap_shown_until = 0.0
@@ -309,6 +345,8 @@ def main():
                     active, start_at = False, None
                 else:
                     start_at = now + 3
+                    if callouts:
+                        callouts.countdown(now)
             if start_at and now >= start_at:
                 start_at = None
                 if pose:
@@ -323,6 +361,11 @@ def main():
                     active = True
                     roll_axis = pitch_axis = 0.0
                     flaps.reset()
+            if callouts and active and not was_active:
+                callouts.engaged(now)
+            elif callouts and was_active and not active:
+                callouts.paused(now)
+            was_active = active
 
             pressed = []
             if active and pose:
@@ -337,9 +380,19 @@ def main():
                 if flap:
                     flap_shown_until = now + 0.4
                 pressed = output.update(roll_axis, pitch_axis, flap)
+                if stream:
+                    # Raw pose relative to the calibrated neutral; the sim does its own shaping.
+                    stream.publish({"active": True, "t": now, "roll": roll - neutral[0],
+                                    "lift": (neutral[1] - height) / neutral[2]})
+                if callouts:
+                    callouts.update(now, True, roll - neutral[0], roll_axis, pitch_axis)
             else:
+                if callouts and active:
+                    callouts.update(now, False, 0.0, 0.0, 0.0)
                 # Fail safe: never leave a key held while tracking is lost or paused.
                 output.release_all()
+                if stream:
+                    stream.publish({"active": False})
                 roll_axis = pitch_axis = 0.0
                 flaps.reset()
 
@@ -380,7 +433,10 @@ def main():
                 # detect_points ignores hue for grayish targets, so nearly everything matches.
                 cv2.putText(panel, "Picked color is too gray - click the middle of a dot",
                             (420, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (80, 80, 255), 1, cv2.LINE_AA)
-            cv2.putText(panel, "Sending: " + (", ".join(pressed) or "-"), (16, 130),
+            if callouts and callouts.voice.errors:
+                cv2.putText(panel, callouts.voice.errors[-1][:60], (16, 118),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 255), 1, cv2.LINE_AA)
+            cv2.putText(panel, "Sending: " + (", ".join(pressed) or "-"), (16, 140),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA)
             cv2.putText(panel, f"Color {args.color} (click a dot to pick) | M: mask | Q/Esc: quit",
                         (16, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1, cv2.LINE_AA)

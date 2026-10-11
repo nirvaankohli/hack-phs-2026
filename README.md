@@ -24,3 +24,20 @@ pip install -r tracking/requirements.txt
 python tracking/wing_controller.py                        # GeoFS
 python tracking/wing_controller.py --hotkey f11 --split   # YSFlight (uses F8 itself), side by side
 ```
+
+Add `--voice` for ElevenLabs callouts (countdown, "Pull up!", steep bank,
+lost tracking, and a spoken flight summary on pause). Set your API key in the
+same PowerShell window first: `$env:ELEVENLABS_API_KEY = "your key"`. Lines are
+cached in `tracking/voice_cache/` after the first time they play.
+
+## Skyborne: be a bird
+
+[sim/](sim/README.md) is a 3D browser sim where you fly as a bald eagle. You
+can ride thermals, stoop into dives and perch on the ground. With the wing
+controller, the eagle copies your arms: tilt to bank, hold high or low to set
+the flight angle, and beat down to flap and gain height.
+
+```
+python tracking/wing_controller.py --sim              # serves and opens the sim; press F8 to start
+python -m http.server 8123 --directory sim            # keyboard-only, then open http://localhost:8123
+```
