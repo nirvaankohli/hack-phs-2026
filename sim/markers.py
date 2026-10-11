@@ -114,8 +114,11 @@ class MarkerDetector:
         self.head = HeadFinder() if ignore_head else None
         self.last_zone = None
 
-    def __call__(self, frame, color, hue_tolerance, shade_tolerance, min_area):
+    def __call__(self, frame, color, hue_tolerance, shade_tolerance, min_area, second_color=None):
         _, mask = detect_points(frame, color, hue_tolerance, shade_tolerance, min_area)
+        if second_color is not None:
+            _, second_mask = detect_points(frame, second_color, hue_tolerance, shade_tolerance, min_area)
+            mask = cv2.bitwise_or(mask, second_mask)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         self.last_zone = self.head.zone(frame) if self.head else None
         return pick_markers(contours, min_area, self.max_area, self.last_zone)

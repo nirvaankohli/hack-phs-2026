@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from game.bridge import FlightClassifier
 from sim.server import MARKERS, app, serialize_camera, wing_pose
 from tracking import api as tracking_api
 
@@ -35,6 +36,14 @@ class ServerTests(unittest.TestCase):
         self.assertAlmostEqual(pose["lift"], 0.1)
         self.assertAlmostEqual(pose["roll"], math.degrees(math.atan2(0.2, 1)))
         self.assertEqual(pose["t"], 2.5)
+
+    def test_pose_after_calibrating_the_bridge_classifier(self):
+        classifier = FlightClassifier()
+        classifier.calibrate(values(20, 20))
+        self.assertEqual(wing_pose({"dot_count": 3}, values(20, 20), classifier, 1.0)["lift"], 0.0)
+        pose = wing_pose({"dot_count": 3}, values(60, 20), classifier, 1.0)
+        self.assertAlmostEqual(pose["left"], 0.2)
+        self.assertGreater(pose["roll"], 0)
 
     def test_folded_wings_shrink_span(self):
         pose = wing_pose({"dot_count": 3}, values(20, 20, 60, 60), self.calibrated, 1.0)

@@ -91,6 +91,26 @@ async def pose():
                              headers={"Cache-Control": "no-cache"})
 
 
+def record_neutral_pose(classifier_class):
+    """Remember each wing's calibrated height on the bridge's classifier.
+
+    Cloudbound measures dives from the body marker and no longer keeps the
+    calibrated wing heights, but wing_pose reads lift and roll relative to them.
+    """
+    calibrate = classifier_class.calibrate
+    classifier_class.neutral_y = (0.0, 0.0)
+
+    def calibrate_with_neutral(self, values):
+        calibrate(self, values)
+        self.neutral_y = (values["left_height_relative_to_average"] / self.span,
+                          values["right_height_relative_to_average"] / self.span)
+
+    classifier_class.calibrate = calibrate_with_neutral
+
+
+record_neutral_pose(bridge.FlightClassifier)
+
+
 def configure_markers(**overrides):
     tracking_api.settings = tracking_api.Settings(**(MARKERS | overrides))
 
