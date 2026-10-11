@@ -27,6 +27,8 @@ var velocity := 0.0
 var flight_state := "glide"
 var score := 0
 var coins := 0
+var hearts := 3
+var hit_protection := 0.0
 var countdown := 0.0
 var spawn_timer := 0.0
 var hazard_index := 0
@@ -48,11 +50,13 @@ var ui: Control
 var status_label: Label
 var preview: TextureRect
 var flight_camera_label: Label
-var hue_request: HTTPRequest
-var hue_timer := 0.0
 var marker_color := Color.GREEN
-var hue_buttons: Array[Button] = []
-var hue_suggestions: Array = []
+var second_marker_color := Color.RED
+var second_color_enabled := false
+var editing_color_slot := 0
+var dropper_active := false
+var dropper_image: Image
+var dropper_button: Button
 var hue_swatch: ColorRect
 var hue_label: Label
 var color_sliders: Dictionary = {}
@@ -103,10 +107,6 @@ func _ready() -> void:
 	add_child(ui)
 	sound = AudioStreamPlayer.new()
 	add_child(sound)
-	hue_request = HTTPRequest.new()
-	hue_request.timeout = 2.0
-	add_child(hue_request)
-	hue_request.request_completed.connect(on_hues)
 	state_request = HTTPRequest.new()
 	state_request.timeout = 2.0
 	add_child(state_request)
@@ -157,13 +157,15 @@ func clear_ui() -> void:
 	for child in ui.get_children():
 		ui.remove_child(child)
 		child.queue_free()
-	hue_buttons.clear()
 	hue_swatch = null
 	hue_label = null
 	color_sliders.clear()
 	color_readouts.clear()
 	status_label = null
 	preview = null
+	dropper_active = false
+	dropper_image = null
+	dropper_button = null
 	flight_camera_label = null
 
 func label(text: String, pos: Vector2, font_size: int = 20, color: Color = INK, width: float = 600.0, bold: bool = false) -> Label:
@@ -267,7 +269,7 @@ func show_settings(from: String) -> void:
 	button(("> " if control_mode == "keyboard" else "") + "Keyboard", Rect2(246, 182, 238, 52), func(): set_control("keyboard"), control_mode == "keyboard")
 	button(("> " if control_mode == "wings" else "") + "Physical wings", Rect2(498, 182, 282, 52), func(): set_control("wings"), control_mode == "wings")
 	label("SPACE / UP   Flap       RELEASE   Glide       DOWN / S   Dive", Vector2(246, 250), 18, INK, 800)
-	label("Move both wings: flap. Hold open: glide. Lower + tuck: dive.", Vector2(246, 280), 17, INK, 800)
+	label("Move both wings: flap. Near center: glide. Both below center: dive.", Vector2(246, 280), 17, INK, 800)
 	label("LOCAL CAMERA BRIDGE", Vector2(246, 331), 13, TEAL, 700, true)
 	var field := LineEdit.new()
 	field.position = Vector2(246, 359)
@@ -293,7 +295,9 @@ func show_wing_colors() -> void:
 	panel(Rect2(100, 20, 1080, 684))
 	label("WING DOT TRACKING", Vector2(144, 48), 14, TEAL)
 	label("Choose your wing color", Vector2(144, 78), 34)
-	label("Match the colored dots on your physical wings.", Vector2(144, 128), 20)
+	button("Color 1", Rect2(144, 116, 204, 44), func(): editing_color_slot = 0; show_wing_colors(), editing_color_slot == 0)
+	button("Color 2", Rect2(368, 116, 204, 44), func(): editing_color_slot = 1; second_color_enabled = true; show_wing_colors(), editing_color_slot == 1)
+	button("Two colors: " + ("ON" if second_color_enabled else "OFF"), Rect2(680, 116, 300, 44), func(): second_color_enabled = not second_color_enabled; show_wing_colors())
 	panel(Rect2(144, 174, 480, 360))
 	label("Connect camera to preview", Vector2(174, 337), 20, TEAL, 420, true)
 	preview = TextureRect.new()
@@ -312,27 +316,30 @@ func show_wing_colors() -> void:
 	hue_swatch.position = Vector2(1092, 175)
 	hue_swatch.size = Vector2(44, 20)
 	ui.add_child(hue_swatch)
-	add_color_slider("Hue", 212, 359, roundi(marker_color.h * 360))
-	add_color_slider("Saturation", 260, 100, roundi(marker_color.s * 100))
-	add_color_slider("Brightness", 308, 100, roundi(marker_color.v * 100))
+	add_color_slider("Hue", 212, 359, roundi(editing_marker_color().h * 360))
+	add_color_slider("Saturation", 260, 100, roundi(editing_marker_color().s * 100))
+	add_color_slider("Brightness", 308, 100, roundi(editing_marker_color().v * 100))
 	add_color_slider("Hue tolerance", 356, 90, hue_tolerance)
 	add_color_slider("Shade tolerance", 404, 255, shade_tolerance)
 	add_color_slider("Minimum dot size", 452, 100000, min_dot_area)
 	button("Apply", Rect2(680, 518, 214, 48), apply_marker_color, true)
 	button("Connect", Rect2(922, 518, 214, 48), enable_camera)
-	label("TOP 3 HUES IN CAMERA", Vector2(144, 580), 17, TEAL)
-	label("Click to select", Vector2(960, 580), 16, TEAL, 220)
-	for i in 3:
-		var b := button("Waiting for camera", Rect2(144 + i * 340, 610, 312, 44), func(): select_hue(i))
-		b.add_theme_font_size_override("font_size", 18)
-		b.disabled = true
-		hue_buttons.append(b)
-	status_label = label("Enable the camera to see its most common colors.", Vector2(144, 670), 14, TEAL, 760)
+	dropper_button = button("Pick from camera", Rect2(144, 592, 312, 48), toggle_dropper, true)
+	label("Select Color 1 or 2, then pick its dot in the camera.", Vector2(484, 596), 18, INK, 650)
+	label("The picker samples the original image. Apply when ready.", Vector2(484, 624), 15, TEAL, 650)
+	preview.gui_input.connect(on_dropper_input)
+	status_label = label("Connect the camera to pick a color.", Vector2(144, 670), 14, TEAL, 960)
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	button("Back", Rect2(966, 78, 170, 48), func(): show_settings(previous_screen))
-	hue_timer = 0
+	button("Back", Rect2(966, 48, 170, 48), func(): show_settings(previous_screen))
 	preview_timer = 0
 	update_hue_preview()
+
+func editing_marker_color() -> Color:
+	return second_marker_color if editing_color_slot == 1 else marker_color
+
+func set_editing_marker_color(value: Color) -> void:
+	if editing_color_slot == 1: second_marker_color = value
+	else: marker_color = value
 
 func add_color_slider(title: String, y: float, maximum: int, value: int) -> void:
 	var readout := label("", Vector2(680, y), 17, INK, 456)
@@ -349,7 +356,7 @@ func add_color_slider(title: String, y: float, maximum: int, value: int) -> void
 	color_sliders[title] = slider
 	color_readouts[title] = readout
 	slider.value_changed.connect(func(_value):
-		marker_color = Color.from_hsv(color_sliders["Hue"].value / 360.0, color_sliders["Saturation"].value / 100.0, color_sliders["Brightness"].value / 100.0)
+		set_editing_marker_color(Color.from_hsv(color_sliders["Hue"].value / 360.0, color_sliders["Saturation"].value / 100.0, color_sliders["Brightness"].value / 100.0))
 		hue_tolerance = int(color_sliders["Hue tolerance"].value)
 		shade_tolerance = int(color_sliders["Shade tolerance"].value)
 		min_dot_area = int(color_sliders["Minimum dot size"].value)
@@ -362,44 +369,56 @@ func update_hue_preview() -> void:
 		var suffix := "%" if title in ["Saturation", "Brightness"] else ""
 		if title == "Minimum dot size": suffix = " px²"
 		color_readouts[title].text = "%s   %d%s" % [title, color_sliders[title].value, suffix]
-	if is_instance_valid(hue_swatch): hue_swatch.color = marker_color
-	if is_instance_valid(hue_label): hue_label.text = "SELECTED  #%s" % marker_color.to_html(false).to_upper()
+	if is_instance_valid(hue_swatch): hue_swatch.color = editing_marker_color()
+	if is_instance_valid(hue_label): hue_label.text = "COLOR %d  #%s" % [editing_color_slot + 1, editing_marker_color().to_html(false).to_upper()]
 
 func hue_preview_query() -> String:
-	return "?color=%%23%s&hue_tolerance=%d&shade_tolerance=%d&min_dot_area=%d" % [marker_color.to_html(false), hue_tolerance, shade_tolerance, min_dot_area]
+	if dropper_active: return ""
+	var query := "?color=%%23%s&hue_tolerance=%d&shade_tolerance=%d&min_dot_area=%d" % [marker_color.to_html(false), hue_tolerance, shade_tolerance, min_dot_area]
+	if second_color_enabled: query += "&second_color=%23" + second_marker_color.to_html(false)
+	return query
 
-func select_hue(index: int) -> void:
-	if index >= hue_suggestions.size(): return
-	marker_color = Color(hue_suggestions[index].color)
-	color_sliders["Hue"].set_value_no_signal(roundi(marker_color.h * 360))
-	color_sliders["Saturation"].set_value_no_signal(roundi(marker_color.s * 100))
-	color_sliders["Brightness"].set_value_no_signal(roundi(marker_color.v * 100))
+func toggle_dropper() -> void:
+	dropper_active = not dropper_active
+	dropper_image = null
+	preview_timer = 0
+	preview.mouse_default_cursor_shape = Control.CURSOR_CROSS if dropper_active else Control.CURSOR_ARROW
+	dropper_button.text = "Cancel picker" if dropper_active else "Pick from camera"
+	set_status("Click the wing dot to sample Color %d." % (editing_color_slot + 1) if dropper_active else "Adjust the sliders, then Apply.")
+
+func on_dropper_input(event: InputEvent) -> void:
+	if not dropper_active or dropper_image == null: return
+	if not event is InputEventMouseButton or event.button_index != MOUSE_BUTTON_LEFT or not event.pressed: return
+	var image_size := Vector2(dropper_image.get_size())
+	var scale_v := minf(preview.size.x / image_size.x, preview.size.y / image_size.y)
+	var displayed := image_size * scale_v
+	var point: Vector2 = (event.position - (preview.size - displayed) * 0.5) / scale_v
+	if point.x < 0 or point.y < 0 or point.x >= image_size.x or point.y >= image_size.y: return
+	# Median of a 5x5 patch reduces camera noise without sampling the overlay.
+	var reds: Array[float] = []
+	var greens: Array[float] = []
+	var blues: Array[float] = []
+	for y in range(maxi(0, int(point.y) - 2), mini(dropper_image.get_height(), int(point.y) + 3)):
+		for x in range(maxi(0, int(point.x) - 2), mini(dropper_image.get_width(), int(point.x) + 3)):
+			var pixel := dropper_image.get_pixel(x, y)
+			reds.append(pixel.r)
+			greens.append(pixel.g)
+			blues.append(pixel.b)
+	reds.sort()
+	greens.sort()
+	blues.sort()
+	var middle := int(reds.size() / 2)
+	set_editing_marker_color(Color(reds[middle], greens[middle], blues[middle]))
+	color_sliders["Hue"].set_value_no_signal(roundi(editing_marker_color().h * 360))
+	color_sliders["Saturation"].set_value_no_signal(roundi(editing_marker_color().s * 100))
+	color_sliders["Brightness"].set_value_no_signal(roundi(editing_marker_color().v * 100))
+	toggle_dropper()
 	update_hue_preview()
-	apply_marker_color()
+	set_status("Color %d sampled. Check the highlighted dots, then Apply." % (editing_color_slot + 1))
+	preview.accept_event()
 
 func apply_marker_color() -> void:
-	send_action("color", "/tracking/settings", JSON.stringify({"color": "#" + marker_color.to_html(false), "hue_tolerance": hue_tolerance, "shade_tolerance": shade_tolerance, "min_dot_area": min_dot_area}))
-
-func on_hues(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-	if screen != "wing_colors": return
-	if code != 200:
-		for b in hue_buttons: b.disabled = true
-		set_status("Waiting for camera. Connect it and keep the wing dots in view.")
-		return
-	var data = JSON.parse_string(body.get_string_from_utf8())
-	if not data is Dictionary: return
-	hue_suggestions = data.get("colors", [])
-	for i in hue_buttons.size():
-		var b := hue_buttons[i]
-		b.disabled = i >= hue_suggestions.size()
-		if b.disabled:
-			b.text = "No other hue"
-			continue
-		var suggestion: Dictionary = hue_suggestions[i]
-		var color := Color(suggestion.color)
-		b.text = "%s / %.1f%%" % [suggestion.color, suggestion.percent]
-		b.add_theme_stylebox_override("normal", style(color, INK))
-		b.add_theme_color_override("font_color", INK if color.get_luminance() > 0.4 else CREAM)
+	send_action("color", "/camera/settings", JSON.stringify({"color": "#" + marker_color.to_html(false), "hue_tolerance": hue_tolerance, "shade_tolerance": shade_tolerance, "min_dot_area": min_dot_area, "second_color": "#" + second_marker_color.to_html(false) if second_color_enabled else null}))
 
 func set_control(value: String) -> void:
 	control_mode = value
@@ -424,6 +443,8 @@ func start_run() -> void:
 	velocity = 0
 	score = 0
 	coins = 0
+	hearts = 3
+	hit_protection = 0.0
 	hazard_index = 0
 	bird_bag.clear()
 	spawn_timer = 1.8
@@ -522,6 +543,7 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func step_game(delta: float) -> void:
+	hit_protection = maxf(0.0, hit_protection - delta)
 	elapsed += delta
 	if control_mode == "keyboard":
 		if Input.is_physical_key_pressed(KEY_DOWN) or Input.is_physical_key_pressed(KEY_S): flight_state = "dive"
@@ -535,8 +557,10 @@ func step_game(delta: float) -> void:
 		avatar_y = 104
 		velocity = maxf(velocity, 0)
 	if avatar_y > 660:
-		burst(Vector2(300, avatar_y), 20)
-		finish(false)
+		take_hit()
+		if screen == "play":
+			avatar_y = 330
+			velocity = 0
 		return
 	if flight_state == "flap" and clock - last_flap_sound > 0.34:
 		last_flap_sound = clock
@@ -555,9 +579,9 @@ func step_game(delta: float) -> void:
 			o.passed = true
 			score += 10
 		var separation: Vector2 = (Vector2(300, avatar_y) - Vector2(o.x, o.y)) / (o.radius + Vector2(20, 20))
-		if separation.length_squared() < 1.0:
-			burst(Vector2(300, avatar_y), 24)
-			finish(false)
+		if separation.length_squared() < 1.0 and hit_protection <= 0:
+			obstacles.remove_at(i)
+			take_hit()
 			return
 		if o.x < -180: obstacles.remove_at(i)
 	for i in range(pickups.size() - 1, -1, -1):
@@ -571,6 +595,16 @@ func step_game(delta: float) -> void:
 			pickups.remove_at(i)
 		elif p.x < -40: pickups.remove_at(i)
 	if elapsed >= DURATION: finish(true)
+
+func take_hit() -> void:
+	if hit_protection > 0 or screen != "play": return
+	hearts = maxi(0, hearts - 1)
+	burst(Vector2(300, avatar_y), 24)
+	chirp(140, 0.16)
+	if hearts == 0:
+		finish(false)
+	else:
+		hit_protection = 1.5
 
 func hazard_speed() -> float:
 	return 300.0 + minf(elapsed, 60.0) * 2.4
@@ -637,7 +671,8 @@ func _draw() -> void:
 				draw_texture_rect(sprites.storm_cloud, Rect2(Vector2(o.x, o.y) - Vector2(86, 49), Vector2(172, 98)), false)
 			else: draw_bird(Vector2(o.x, o.y), clock + o.phase, o.species)
 		for p in pickups: draw_coin(Vector2(p.x, p.y), 44.0)
-		draw_avatar(Vector2(300, avatar_y), 0.83, flight_state)
+		if hit_protection <= 0 or reduced_motion or int(hit_protection * 10) % 2 == 0:
+			draw_avatar(Vector2(300, avatar_y), 0.83, flight_state)
 		for p in particles:
 			draw_rect(Rect2(p.p, Vector2(5, 5)), Color(1, 0.9, 0.58, minf(p.life * 2, 1)))
 		if screen == "play": draw_hud()
@@ -740,7 +775,17 @@ func add_pause_button() -> void:
 func text_at(text: String, pos: Vector2, size_v: int, color: Color = INK) -> void:
 	draw_string(body_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_v, color)
 
+func draw_heart(pos: Vector2, filled: bool) -> void:
+	var pixels := ["0110110", "1111111", "1111111", "0111110", "0011100", "0001000"]
+	var color := Color("dd5a73") if filled else Color("d4dfd8")
+	for y in pixels.size():
+		for x in pixels[y].length():
+			if pixels[y][x] == "1": draw_rect(Rect2(pos + Vector2(x, y) * 4, Vector2(4, 4)), color)
+
 func draw_hud() -> void:
+	hud_panel(Rect2(274, 24, 156, 80))
+	text_at("HEARTS", Vector2(292, 48), 14, TEAL)
+	for i in 3: draw_heart(Vector2(292 + i * 40, 62), i < hearts)
 	hud_panel(Rect2(30, 24, 224, 80))
 	text_at("SCORE", Vector2(48, 48), 14, TEAL)
 	text_at("%04d" % score, Vector2(48, 84), 34)
@@ -762,7 +807,7 @@ func draw_hud() -> void:
 	for mark in [0.25, 0.5, 0.75]:
 		draw_line(Vector2(475 + mark * 330, 70), Vector2(475 + mark * 330, 80), CREAM, 2)
 	hud_panel(Rect2(30, 620, 374, 66))
-	var help := "SPACE / UP: rise   DOWN / S: dive" if control_mode == "keyboard" else "Spread: glide   /   Tuck: dive"
+	var help := "SPACE / UP: rise   DOWN / S: dive" if control_mode == "keyboard" else "Near center: glide   /   Lower: dive"
 	text_at(flight_state.to_upper(), Vector2(49, 647), 22, TEAL)
 	text_at(help, Vector2(49, 673), 15)
 	if countdown > 0:
@@ -833,14 +878,10 @@ func on_action(_result: int, code: int, _headers: PackedStringArray, body: Packe
 		else: set_status("Could not read the portrait. Please capture again.")
 	elif kind == "calibrate":
 		calibrated = true
-		set_status("Calibrated. Flap to rise, spread to glide, tuck to dive.")
+		set_status("Calibrated. Flap to rise, hold near center to glide, lower both to dive.")
 
 func poll_camera(delta: float) -> void:
 	if not camera_on: return
-	hue_timer -= delta
-	if screen == "wing_colors" and hue_timer <= 0 and hue_request.get_http_client_status() == HTTPClient.STATUS_DISCONNECTED:
-		hue_timer = 1.0
-		hue_request.request(api_url + "/camera/hues")
 	poll_timer -= delta
 	preview_timer -= delta
 	if poll_timer <= 0 and state_request.get_http_client_status() == HTTPClient.STATUS_DISCONNECTED:
@@ -885,9 +926,10 @@ func on_preview(_result: int, code: int, _headers: PackedStringArray, body: Pack
 	var img := Image.new()
 	if img.load_jpg_from_buffer(body) == OK:
 		var texture := ImageTexture.create_from_image(img)
+		if screen == "wing_colors" and dropper_active: dropper_image = img
 		if screen == "setup": camera_image = texture
 		if is_instance_valid(preview): preview.texture = texture
-		if screen == "wing_colors" and action_kind == "" and not status_text.begins_with("Tracking settings applied"):
+		if screen == "wing_colors" and not dropper_active and action_kind == "" and status_text.begins_with("Camera preview unavailable"):
 			set_status("Live preview / Adjust the sliders, then Apply.")
 
 func set_status(message: String) -> void:
@@ -905,6 +947,8 @@ func load_settings() -> void:
 		hue_tolerance = clampi(config.get_value("game", "hue_tolerance", 15), 0, 90)
 		shade_tolerance = clampi(config.get_value("game", "shade_tolerance", 160), 0, 255)
 		min_dot_area = clampi(config.get_value("game", "min_dot_area", 30), 1, 100000)
+		second_marker_color = Color(config.get_value("game", "second_marker_color", "#ff0000"))
+		second_color_enabled = config.get_value("game", "second_color_enabled", false)
 		best = config.get_value("game", "best", 0)
 
 func save_settings() -> void:
@@ -919,6 +963,8 @@ func save_settings() -> void:
 	config.set_value("game", "hue_tolerance", hue_tolerance)
 	config.set_value("game", "shade_tolerance", shade_tolerance)
 	config.set_value("game", "min_dot_area", min_dot_area)
+	config.set_value("game", "second_marker_color", "#" + second_marker_color.to_html(false))
+	config.set_value("game", "second_color_enabled", second_color_enabled)
 	config.save("user://cloudbound.cfg")
 
 func chirp(frequency: float, duration: float, volume: float = 0.10) -> void:
